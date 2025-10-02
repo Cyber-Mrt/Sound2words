@@ -1,0 +1,5 @@
+# Not: ffmpeg ayrı bir sistem uygulamasıdır; pip ile gelmez. PATH'e ekli olmalı.
+openai-whisper>=20231117
+faster-whisper>=1.0.1
+torch>=2.2.0
+pyperclip>=1.8.2
