@@ -2,7 +2,7 @@
 # transkript.py — tek tıkla dosya seç + openai-whisper / faster-whisper seçilebilir
 # Kullanım:
 #   python transkript.py "C:\...\audio.m4a"                (openai-whisper)
-#   python transkript.py "C:\...\audio.m4a" --fw           (faster-whisper)
+#   python .\transkript.py --fw --model large-v3 --vad     (faster-whisper)
 #   python transkript.py --fw --model large-v3 --lang tr   (FW + large-v3 + TR)
 #   python transkript.py                                    (pencere açar)
 
@@ -182,55 +182,41 @@ def main():
 
     model_name = auto_model_for_vram(args.model)
 
-    if not args.fw:
-        # ------------------ openai-whisper yolu ------------------
-        print(f"[OW] Model yükleniyor ({model_name})...")
-        t0 = time.time()
-        model = ow.load_model(model_name, device=device)
-        print(f"[OW] Model yüklendi. Süre: {time.time() - t0:.1f} sn")
-
-        initial_prompt = (
-            "Türkçe ve İngilizce karışık bir konuşmanın düzgün noktalama ile yazıya dökümü. "
-            "İmla ve özel isimler korunur. Gerekmedikçe kelime uydurma."
-        )
-
-        print("[OW] Transkripsiyon başladı…")
-        t1 = time.time()
-        result = model.transcribe(
-            str(audio_path),
-            task="transcribe",
-            language=args.lang,
-            fp16=fp16_flag,
-            temperature=[0.0, 0.2, 0.4],
-            beam_size=5,
-            best_of=None,
-            patience=0.0,
-            condition_on_previous_text=False,
-            initial_prompt=initial_prompt,
-            suppress_tokens="-1",
-            logprob_threshold=-1.0,
-            compression_ratio_threshold=2.4,
-            word_timestamps=not args.no_words,
-            verbose=False,
-        )
-        dur = time.time() - t1
-        print(f"[OW] Transkripsiyon tamamlandı! Süre: {dur:.1f} sn")
-
-        # Zaten openai-whisper sözlüğü ile uyumlu
-        result_dict = {
-            "text": result.get("text", ""),
-            "segments": result.get("segments", []),
-            "language": result.get("language"),
-        }
-
-    else:
+    if args.fw:
         # ------------------ faster-whisper yolu ------------------
+        import subprocess, threading, sys
         from faster_whisper import WhisperModel
 
-        # VRAM’e göre compute_type seçimi:
-        #  - 10GB+ -> float16
-        #  - 6–10GB -> int8_float16  (RTX 4050 6GB için en iyi denge)
-        #  - CPU -> int8
+        def get_media_duration_sec(path: str) -> float:
+            try:
+                out = subprocess.check_output([
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    path
+                ], stderr=subprocess.STDOUT)
+                return float(out.decode().strip())
+            except Exception:
+                return 0.0
+
+        class Spinner:
+            def __init__(self, interval=0.5):
+                self.interval = interval
+                self._stop = threading.Event()
+                self._thr = threading.Thread(target=self._run, daemon=True)
+            def start(self):
+                self._thr.start()
+            def stop(self):
+                self._stop.set()
+                self._thr.join(timeout=1.0)
+            def _run(self):
+                ticks = 0
+                while not self._stop.is_set():
+                    ticks += 1
+                    print(f"[FW] Başlatılıyor… (warmup {ticks*self.interval:.1f}s)", flush=True)
+                    self._stop.wait(self.interval)
+
+        # VRAM’e göre compute_type
         compute_type = "int8"
         if device == "cuda":
             vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
@@ -241,30 +227,62 @@ def main():
         model = WhisperModel(model_name, device=device, compute_type=compute_type)
         print(f"[FW] Model yüklendi. Süre: {time.time() - t0:.1f} sn")
 
+        total_sec = get_media_duration_sec(str(audio_path))
+        if total_sec > 0:
+            print(f"[FW] Tahmini süre: {total_sec:.1f} sn")
+
         print("[FW] Transkripsiyon başladı…")
         t1 = time.time()
-        segments, info = model.transcribe(
+
+        # 1) Spinner'ı başlat (ilk segmente kadar nabız)
+        spin = Spinner(interval=0.5)
+        spin.start()
+        got_first = False
+
+        seg_iter, info = model.transcribe(
             str(audio_path),
-            language=args.lang,          # None -> otomatik
+            language=args.lang,         # None -> otomatik; --lang tr ise daha hızlı başlar
             task="transcribe",
-            beam_size=5,
-            vad_filter=args.vad,         # --vad ile aç
-            # vad_parameters={"min_silence_duration_ms": 500}  # istersen ince ayar
+            beam_size=1,                # hızlı başlangıç
+            vad_filter=args.vad,        # --vad gecikme yaratabilir; gerek yoksa kapat
+            # word_timestamps=False,
         )
-        result_dict = build_uniform_result_text_segments_from_fw(segments, info)
+
+        segs, texts = [], []
+        last_print = time.time()
+        processed = 0.0
+
+        for s in seg_iter:
+            if not got_first:
+                # 2) İlk segment geldi: spinner'ı sustur
+                spin.stop()
+                got_first = True
+                print("[FW] İlk segment alındı, ilerleme başlıyor…", flush=True)
+
+            segs.append({"start": s.start, "end": s.end, "text": s.text})
+            texts.append(s.text)
+
+            processed = max(processed, float(getattr(s, "end", 0.0)))
+            now = time.time()
+            if now - last_print >= 0.5:
+                if total_sec > 0:
+                    pct = min(100.0, processed / total_sec * 100.0)
+                    print(f"[FW] {processed:7.1f}s / {total_sec:7.1f}s  ({pct:5.1f}%)", flush=True)
+                else:
+                    print(f"[FW] İşlenen ~{processed:.1f}s", flush=True)
+                last_print = now
+
+        # Eğer hiç segment gelmediyse spinner çalışıyor olabilir; kapat
+        if not got_first:
+            spin.stop()
+
         dur = time.time() - t1
         print(f"[FW] Transkripsiyon tamamlandı! Süre: {dur:.1f} sn")
 
-    # Çıktıları yaz
-    dump_txt(result_dict, out_txt)
-    dump_srt(result_dict, out_srt)
-    dump_vtt(result_dict, out_vtt)
-
-    print("Algılanan ana dil:", result_dict.get("language"))
-    print("Toplam segment:", len(result_dict.get("segments", [])))
-    print("TXT:", out_txt)
-    print("SRT:", out_srt)
-    print("VTT:", out_vtt)
-
+        result_dict = {
+            "text": " ".join(t.strip() for t in texts).strip(),
+            "segments": segs,
+            "language": getattr(info, "language", None),
+        }
 if __name__ == "__main__":
     main()
