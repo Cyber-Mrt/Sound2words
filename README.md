@@ -2,7 +2,7 @@
 Transcripting experience with open-ai-whisper
 
 ## Kurulum
-Bu projeyi çalıştırmak için Python ortamınızı hazırlamak üzere şu adımları izleyin:
+Bu projeyi çalıştırmak için **Python 3.10.11** kullanmanız önerilir. Daha yeni veya eski sürümlerde uyumsuzluklar yaşanabilir.
 
 1. **Sanal ortam oluşturun (opsiyonel ama önerilir):**
    ```bash
