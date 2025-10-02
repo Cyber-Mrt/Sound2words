@@ -1,5 +1,11 @@
 # Not: ffmpeg ayrı bir sistem uygulamasıdır; pip ile gelmez. PATH'e ekli olmalı.
+
+# Whisper backend’leri
 openai-whisper>=20231117
 faster-whisper>=1.0.1
-torch>=2.2.0
+
+# GPU destekli PyTorch (CUDA 12.1 ile uyumlu)
+torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Araçlar
 pyperclip>=1.8.2
