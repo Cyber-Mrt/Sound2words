@@ -277,12 +277,42 @@ def main():
             spin.stop()
 
         dur = time.time() - t1
-        print(f"[FW] Transkripsiyon tamamlandı! Süre: {dur:.1f} sn")
+        print(f"[FW] Transkripsiyon tamamlandı! Süre: {dur:.1f} sn", flush=True)
 
         result_dict = {
             "text": " ".join(t.strip() for t in texts).strip(),
             "segments": segs,
             "language": getattr(info, "language", None),
         }
+
+        # --- TEŞHİS: nereye yazacağız? bu script hangisi? çalışma dizini ne? ---
+        print(f"[DBG] __file__        : {__file__}", flush=True)
+        print(f"[DBG] cwd            : {os.getcwd()}", flush=True)
+        print(f"[DBG] audio_path     : {audio_path}", flush=True)
+        print(f"[DBG] outdir (target): {outdir}", flush=True)
+        print(f"[DBG] out_txt        : {out_txt}", flush=True)
+
+        # --- TEŞHİS: bu klasöre yazabiliyor muyuz? ---
+        try:
+            testfile = outdir / "_write_test.tmp"
+            testfile.write_text("ok", encoding="utf-8")
+            print(f"[DBG] Write test OK: {testfile}", flush=True)
+            testfile.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"[ERR] Klasöre yazılamıyor: {outdir} | Hata: {e}", flush=True)
+
+        # --- ÇIKTI DOSYALARINI YAZ ---
+        try:
+            dump_txt(result_dict, out_txt)
+            dump_srt(result_dict, out_srt)
+            dump_vtt(result_dict, out_vtt)
+            print(f"[OUT] Kaydedildi:\n  TXT: {out_txt}\n  SRT: {out_srt}\n  VTT: {out_vtt}", flush=True)
+
+            # Yazıldı mı gerçekten? (Windows/OneDrive için doğrula)
+            for p in (out_txt, out_srt, out_vtt):
+                print(f"[CHK] {p}  exists={p.exists()}  size={p.stat().st_size if p.exists() else 0}", flush=True)
+        except Exception as e:
+            print(f"[ERR] Çıktı yazılamadı: {e}", flush=True)
+
 if __name__ == "__main__":
     main()
